@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-
-// Minimal structural type for form submit handlers. Avoids React 19's
-// @deprecated FormEvent / FormEventHandler aliases; we only call
-// preventDefault() so this is exactly what we need and stays type-safe.
-type SubmitLike = { preventDefault: () => void };
 import { ApiError } from '../api/client';
 import {
   bulkUpdatePrices,
@@ -21,6 +16,12 @@ import type {
   ProductCreateInput,
   ProductUpdateInput,
 } from '../types/product';
+import { ProductImagesPanel } from '../components/ProductImagesPanel';
+
+// Minimal structural type for form submit handlers. Avoids React 19's
+// @deprecated FormEvent / FormEventHandler aliases; we only call
+// preventDefault() so this is exactly what we need and stays type-safe.
+type SubmitLike = { preventDefault: () => void };
 
 type Mode =
   | { kind: 'list' }
@@ -515,6 +516,8 @@ export function AdminProductsPage() {
           </form>
         </section>
       )}
+
+      {mode.kind === 'edit' && <ProductImagesPanel productId={mode.id} />}
 
       {/* ---- Status filter ------------------------------------- */}
       <div className="admin-page__filter">

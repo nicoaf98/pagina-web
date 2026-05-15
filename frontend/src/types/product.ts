@@ -109,3 +109,12 @@ export interface BulkPriceResult {
   scope: BulkScope;
   round_to: number;
 }
+
+// Row from /api/admin/products/:id/images endpoints.
+export interface ProductImage {
+  id: number;
+  url: string;
+  alt_text: string | null;
+  position: number;
+  is_primary: boolean;
+}

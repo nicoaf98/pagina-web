@@ -13,9 +13,9 @@ export interface RequestOptions {
   token?: string;
 }
 
-function buildHeaders(opts?: RequestOptions, hasBody = false): Record<string, string> {
+function buildHeaders(opts?: RequestOptions, jsonBody = false): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json' };
-  if (hasBody) headers['Content-Type'] = 'application/json';
+  if (jsonBody) headers['Content-Type'] = 'application/json';
   if (opts?.token) headers['Authorization'] = `Bearer ${opts.token}`;
   return headers;
 }
@@ -33,7 +33,14 @@ async function parseResponse<T>(res: Response): Promise<T> {
     }
     throw new ApiError(res.status, message);
   }
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return (await res.json()) as T;
+}
+
+function isFormDataBody(body: unknown): body is FormData {
+  return typeof FormData !== 'undefined' && body instanceof FormData;
 }
 
 async function request<T>(
@@ -42,11 +49,15 @@ async function request<T>(
   body?: unknown,
   opts?: RequestOptions
 ): Promise<T> {
-  const hasBody = body !== undefined;
+  const isForm = isFormDataBody(body);
+  const isJson = body !== undefined && !isForm;
+
   const res = await fetch(`${API_BASE_URL}${path}`, {
     method,
-    headers: buildHeaders(opts, hasBody),
-    body: hasBody ? JSON.stringify(body) : undefined,
+    headers: buildHeaders(opts, isJson),
+    // For FormData we deliberately do NOT set Content-Type so the browser
+    // emits the correct multipart boundary header.
+    body: isForm ? (body as FormData) : isJson ? JSON.stringify(body) : undefined,
   });
   return parseResponse<T>(res);
 }
@@ -61,4 +72,8 @@ export function apiPost<T>(path: string, body: unknown, opts?: RequestOptions): 
 
 export function apiPatch<T>(path: string, body: unknown, opts?: RequestOptions): Promise<T> {
   return request<T>('PATCH', path, body, opts);
+}
+
+export function apiDelete<T>(path: string, opts?: RequestOptions): Promise<T> {
+  return request<T>('DELETE', path, undefined, opts);
 }

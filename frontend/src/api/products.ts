@@ -1,4 +1,4 @@
-import { apiGet, apiPatch, apiPost } from './client';
+import { apiDelete, apiGet, apiPatch, apiPost } from './client';
 import type {
   AdminProduct,
   AdminProductRow,
@@ -6,6 +6,7 @@ import type {
   BulkPriceResult,
   ProductCreateInput,
   ProductDetail,
+  ProductImage,
   ProductSummary,
   ProductUpdateInput,
 } from '../types/product';
@@ -85,4 +86,49 @@ export function bulkUpdatePrices(
   payload: BulkPricePayload
 ): Promise<BulkPriceResult> {
   return apiPatch<BulkPriceResult>('/api/admin/products/prices/bulk', payload, { token });
+}
+
+// ----- product images (admin) --------------------------------
+
+export function fetchProductImages(
+  token: string,
+  productId: number
+): Promise<ProductImage[]> {
+  return apiGet<ProductImage[]>(`/api/admin/products/${productId}/images`, { token });
+}
+
+export function uploadProductImage(
+  token: string,
+  productId: number,
+  file: File,
+  altText?: string
+): Promise<ProductImage> {
+  const fd = new FormData();
+  fd.append('file', file);
+  if (altText && altText.trim().length > 0) {
+    fd.append('alt_text', altText.trim());
+  }
+  // Pass FormData directly — client.ts skips Content-Type so the browser sets
+  // the multipart boundary itself.
+  return apiPost<ProductImage>(`/api/admin/products/${productId}/images`, fd, { token });
+}
+
+export function deleteProductImage(
+  token: string,
+  productId: number,
+  imageId: number
+): Promise<void> {
+  return apiDelete<void>(`/api/admin/products/${productId}/images/${imageId}`, { token });
+}
+
+export function setPrimaryProductImage(
+  token: string,
+  productId: number,
+  imageId: number
+): Promise<ProductImage> {
+  return apiPatch<ProductImage>(
+    `/api/admin/products/${productId}/images/${imageId}/primary`,
+    {},
+    { token }
+  );
 }
