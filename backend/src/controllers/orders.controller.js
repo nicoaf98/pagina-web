@@ -120,23 +120,23 @@ function buildOrderResponse(orderRow, itemRows) {
 }
 
 async function fetchOrderWithItems(executor, id) {
-  const [orderRows] = await executor.query(
+  const { rows: orderRows } = await executor.query(
     `SELECT id, order_code, customer_id,
             customer_name, customer_email, customer_phone,
             subtotal, tax_amount, shipping_cost, discount_amount, total, currency,
             payment_status, fulfillment_status,
             created_at, updated_at
      FROM orders
-     WHERE id = ?`,
+     WHERE id = $1`,
     [id]
   );
   if (orderRows.length === 0) return null;
 
-  const [itemRows] = await executor.query(
+  const { rows: itemRows } = await executor.query(
     `SELECT id, product_id, product_name_snapshot, product_sku_snapshot,
             quantity, unit_price, discount_amount, line_total
      FROM order_items
-     WHERE order_id = ?
+     WHERE order_id = $1
      ORDER BY id`,
     [id]
   );
@@ -165,17 +165,16 @@ async function createOrder(req, res, next) {
   let orderId;
   let transactionError = null;
 
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    await conn.beginTransaction();
+    await client.query('BEGIN');
 
-    const placeholders = productIds.map(() => '?').join(',');
-    const [products] = await conn.query(
+    const { rows: products } = await client.query(
       `SELECT id, sku, name, price, stock, is_active
        FROM products
-       WHERE id IN (${placeholders})
+       WHERE id = ANY($1::int[])
        FOR UPDATE`,
-      productIds
+      [productIds]
     );
 
     const byId = new Map(products.map((p) => [p.id, p]));
@@ -216,13 +215,15 @@ async function createOrder(req, res, next) {
     const taxAmount = 0;
     const total = Math.round((subtotal + shippingCost - discountAmount) * 100) / 100;
 
-    // Insert with temporary unique code, then rewrite to ORD-YYYY-NNNNNN using the new id.
+    // Insert with a temporary unique code, then rewrite to ORD-YYYY-NNNNNN using
+    // the returned id. PG's RETURNING clause gives us the new id in one round-trip.
     const tmpCode = `TMP-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const [orderResult] = await conn.query(
+    const { rows: insertedRows } = await client.query(
       `INSERT INTO orders
          (order_code, customer_name, customer_email, customer_phone,
           subtotal, tax_amount, shipping_cost, discount_amount, total, currency)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ARS')`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ARS')
+       RETURNING id`,
       [
         tmpCode,
         customerName,
@@ -235,46 +236,53 @@ async function createOrder(req, res, next) {
         total,
       ]
     );
-    orderId = orderResult.insertId;
+    orderId = insertedRows[0].id;
 
     const finalCode = `ORD-${new Date().getFullYear()}-${String(orderId).padStart(6, '0')}`;
-    await conn.query('UPDATE orders SET order_code = ? WHERE id = ?', [finalCode, orderId]);
-
-    const itemValues = lineItems.map((li) => [
+    await client.query('UPDATE orders SET order_code = $1 WHERE id = $2', [
+      finalCode,
       orderId,
-      li.product_id,
-      li.product_name,
-      li.product_sku,
-      li.quantity,
-      li.unit_price,
-      li.discount_amount,
-      li.line_total,
     ]);
-    await conn.query(
-      `INSERT INTO order_items
-         (order_id, product_id, product_name_snapshot, product_sku_snapshot,
-          quantity, unit_price, discount_amount, line_total)
-       VALUES ?`,
-      [itemValues]
-    );
+
+    // Insert order_items one row at a time. PG has no equivalent to mysql2's
+    // bulk array-of-arrays shorthand; a loop inside the same transaction is
+    // simple and fine at this scale.
+    for (const li of lineItems) {
+      await client.query(
+        `INSERT INTO order_items
+           (order_id, product_id, product_name_snapshot, product_sku_snapshot,
+            quantity, unit_price, discount_amount, line_total)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          orderId,
+          li.product_id,
+          li.product_name,
+          li.product_sku,
+          li.quantity,
+          li.unit_price,
+          li.discount_amount,
+          li.line_total,
+        ]
+      );
+    }
 
     for (const li of lineItems) {
-      await conn.query('UPDATE products SET stock = stock - ? WHERE id = ?', [
+      await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [
         li.quantity,
         li.product_id,
       ]);
     }
 
-    await conn.commit();
+    await client.query('COMMIT');
   } catch (err) {
     try {
-      await conn.rollback();
+      await client.query('ROLLBACK');
     } catch (_) {
       // ignore rollback failures; the outer error is already captured
     }
     transactionError = err;
   } finally {
-    conn.release();
+    client.release();
   }
 
   if (transactionError) return next(transactionError);
@@ -324,8 +332,8 @@ async function listOrders(req, res, next) {
       if (email.length > 150) {
         return next(makeError(400, 'customer_email too long (max 150)'));
       }
-      where.push('customer_email = ?');
       params.push(email);
+      where.push(`customer_email = $${params.length}`);
     }
 
     if (req.query.payment_status !== undefined) {
@@ -338,8 +346,8 @@ async function listOrders(req, res, next) {
           )
         );
       }
-      where.push('payment_status = ?');
       params.push(ps);
+      where.push(`payment_status = $${params.length}`);
     }
 
     if (req.query.fulfillment_status !== undefined) {
@@ -352,8 +360,8 @@ async function listOrders(req, res, next) {
           )
         );
       }
-      where.push('fulfillment_status = ?');
       params.push(fs);
+      where.push(`fulfillment_status = $${params.length}`);
     }
 
     if (req.query.date_from !== undefined) {
@@ -361,8 +369,8 @@ async function listOrders(req, res, next) {
       if (!d) {
         return next(makeError(400, 'Invalid date_from (expected ISO date string)'));
       }
-      where.push('created_at >= ?');
       params.push(d);
+      where.push(`created_at >= $${params.length}`);
     }
 
     if (req.query.date_to !== undefined) {
@@ -370,9 +378,13 @@ async function listOrders(req, res, next) {
       if (!d) {
         return next(makeError(400, 'Invalid date_to (expected ISO date string)'));
       }
-      where.push('created_at <= ?');
       params.push(d);
+      where.push(`created_at <= $${params.length}`);
     }
+
+    params.push(limit, offset);
+    const limitIdx = params.length - 1;
+    const offsetIdx = params.length;
 
     const sql = `SELECT
          id, order_code,
@@ -383,11 +395,9 @@ async function listOrders(req, res, next) {
        FROM orders
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY created_at DESC
-       LIMIT ? OFFSET ?`;
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
 
-    params.push(limit, offset);
-
-    const [rows] = await pool.query(sql, params);
+    const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     next(err);
@@ -400,14 +410,14 @@ async function cancelOrder(req, res, next) {
 
   let transactionError = null;
 
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    await conn.beginTransaction();
+    await client.query('BEGIN');
 
-    const [orderRows] = await conn.query(
+    const { rows: orderRows } = await client.query(
       `SELECT id, fulfillment_status
        FROM orders
-       WHERE id = ?
+       WHERE id = $1
        FOR UPDATE`,
       [id]
     );
@@ -427,38 +437,38 @@ async function cancelOrder(req, res, next) {
       );
     }
 
-    const [items] = await conn.query(
+    const { rows: items } = await client.query(
       `SELECT product_id, quantity
        FROM order_items
-       WHERE order_id = ?`,
+       WHERE order_id = $1`,
       [id]
     );
 
     for (const item of items) {
-      await conn.query(
-        `UPDATE products SET stock = stock + ? WHERE id = ?`,
-        [item.quantity, item.product_id]
-      );
+      await client.query(`UPDATE products SET stock = stock + $1 WHERE id = $2`, [
+        item.quantity,
+        item.product_id,
+      ]);
     }
 
-    await conn.query(
+    await client.query(
       `UPDATE orders
        SET fulfillment_status = 'cancelled',
            cancelled_at = NOW()
-       WHERE id = ?`,
+       WHERE id = $1`,
       [id]
     );
 
-    await conn.commit();
+    await client.query('COMMIT');
   } catch (err) {
     try {
-      await conn.rollback();
+      await client.query('ROLLBACK');
     } catch (_) {
       // ignore rollback failures; outer error is already captured
     }
     transactionError = err;
   } finally {
-    conn.release();
+    client.release();
   }
 
   if (transactionError) return next(transactionError);
@@ -500,14 +510,14 @@ async function updateOrderStatus(req, res, next) {
 
   let transactionError = null;
 
-  const conn = await pool.getConnection();
+  const client = await pool.connect();
   try {
-    await conn.beginTransaction();
+    await client.query('BEGIN');
 
-    const [orderRows] = await conn.query(
+    const { rows: orderRows } = await client.query(
       `SELECT id, fulfillment_status
        FROM orders
-       WHERE id = ?
+       WHERE id = $1
        FOR UPDATE`,
       [id]
     );
@@ -525,54 +535,54 @@ async function updateOrderStatus(req, res, next) {
     }
 
     if (newStatus === 'shipped') {
-      await conn.query(
+      await client.query(
         `UPDATE orders
-         SET fulfillment_status = ?, shipped_at = NOW()
-         WHERE id = ?`,
+         SET fulfillment_status = $1, shipped_at = NOW()
+         WHERE id = $2`,
         [newStatus, id]
       );
     } else if (newStatus === 'delivered') {
-      await conn.query(
+      await client.query(
         `UPDATE orders
-         SET fulfillment_status = ?, delivered_at = NOW()
-         WHERE id = ?`,
+         SET fulfillment_status = $1, delivered_at = NOW()
+         WHERE id = $2`,
         [newStatus, id]
       );
     } else {
-      await conn.query(
+      await client.query(
         `UPDATE orders
-         SET fulfillment_status = ?
-         WHERE id = ?`,
+         SET fulfillment_status = $1
+         WHERE id = $2`,
         [newStatus, id]
       );
     }
 
     // Returned orders restore stock (same pattern as cancelOrder).
     if (newStatus === 'returned') {
-      const [items] = await conn.query(
+      const { rows: items } = await client.query(
         `SELECT product_id, quantity
          FROM order_items
-         WHERE order_id = ?`,
+         WHERE order_id = $1`,
         [id]
       );
       for (const item of items) {
-        await conn.query(
-          `UPDATE products SET stock = stock + ? WHERE id = ?`,
-          [item.quantity, item.product_id]
-        );
+        await client.query(`UPDATE products SET stock = stock + $1 WHERE id = $2`, [
+          item.quantity,
+          item.product_id,
+        ]);
       }
     }
 
-    await conn.commit();
+    await client.query('COMMIT');
   } catch (err) {
     try {
-      await conn.rollback();
+      await client.query('ROLLBACK');
     } catch (_) {
       // ignore rollback failures; outer error is already captured
     }
     transactionError = err;
   } finally {
-    conn.release();
+    client.release();
   }
 
   if (transactionError) return next(transactionError);

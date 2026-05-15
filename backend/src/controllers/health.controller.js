@@ -7,7 +7,7 @@ async function getHealth(req, res) {
   };
 
   try {
-    const [rows] = await pool.query('SELECT 1 AS ok');
+    const { rows } = await pool.query('SELECT 1 AS ok');
     const dbOk = rows[0] && rows[0].ok === 1;
     res.status(dbOk ? 200 : 503).json({
       status: dbOk ? 'ok' : 'degraded',

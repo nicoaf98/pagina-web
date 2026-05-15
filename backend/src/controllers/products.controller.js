@@ -14,16 +14,18 @@ async function listProducts(req, res, next) {
       : 50;
     const offset = Number.isFinite(rawOffset) ? Math.max(Math.trunc(rawOffset), 0) : 0;
 
-    const where = ['p.is_active = 1'];
+    const where = ['p.is_active = TRUE'];
     const params = [];
 
     if (req.query.search !== undefined) {
       const raw = Array.isArray(req.query.search) ? req.query.search[0] : req.query.search;
       const term = String(raw || '').trim();
       if (term.length > 0) {
-        where.push('(p.name LIKE ? OR p.part_number LIKE ?)');
         const like = `%${term}%`;
         params.push(like, like);
+        where.push(
+          `(p.name ILIKE $${params.length - 1} OR p.part_number ILIKE $${params.length})`
+        );
       }
     }
 
@@ -34,8 +36,8 @@ async function listProducts(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('p.category_id = ?');
       params.push(categoryId);
+      where.push(`p.category_id = $${params.length}`);
     }
 
     if (req.query.manufacturer_id !== undefined) {
@@ -45,8 +47,8 @@ async function listProducts(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('p.manufacturer_id = ?');
       params.push(manufacturerId);
+      where.push(`p.manufacturer_id = $${params.length}`);
     }
 
     if (req.query.vehicle_id !== undefined) {
@@ -56,11 +58,15 @@ async function listProducts(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push(
-        'EXISTS (SELECT 1 FROM product_compatibility pc WHERE pc.product_id = p.id AND pc.vehicle_id = ?)'
-      );
       params.push(vehicleId);
+      where.push(
+        `EXISTS (SELECT 1 FROM product_compatibility pc WHERE pc.product_id = p.id AND pc.vehicle_id = $${params.length})`
+      );
     }
+
+    params.push(limit, offset);
+    const limitIdx = params.length - 1;
+    const offsetIdx = params.length;
 
     const sql = `SELECT
          p.id,
@@ -74,11 +80,9 @@ async function listProducts(req, res, next) {
        INNER JOIN categories    c ON c.id = p.category_id
        WHERE ${where.join(' AND ')}
        ORDER BY p.id
-       LIMIT ? OFFSET ?`;
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
 
-    params.push(limit, offset);
-
-    const [rows] = await pool.query(sql, params);
+    const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     next(err);
@@ -94,7 +98,7 @@ async function getProductById(req, res, next) {
       throw err;
     }
 
-    const [productRows] = await pool.query(
+    const { rows: productRows } = await pool.query(
       `SELECT
          p.id, p.sku, p.part_number, p.slug,
          p.name, p.short_description, p.description,
@@ -110,7 +114,7 @@ async function getProductById(req, res, next) {
        FROM products p
        INNER JOIN manufacturers m ON m.id = p.manufacturer_id
        INNER JOIN categories    c ON c.id = p.category_id
-       WHERE p.id = ?`,
+       WHERE p.id = $1`,
       [id]
     );
 
@@ -122,10 +126,10 @@ async function getProductById(req, res, next) {
 
     const p = productRows[0];
 
-    const [imageRows] = await pool.query(
+    const { rows: imageRows } = await pool.query(
       `SELECT id, url, alt_text, position, is_primary
        FROM product_images
-       WHERE product_id = ?
+       WHERE product_id = $1
        ORDER BY position`,
       [id]
     );
@@ -171,17 +175,17 @@ async function getProductCompatibility(req, res, next) {
       throw err;
     }
 
-    const [[product]] = await pool.query(
-      'SELECT id FROM products WHERE id = ?',
+    const { rows: productRows } = await pool.query(
+      'SELECT id FROM products WHERE id = $1',
       [id]
     );
-    if (!product) {
+    if (productRows.length === 0) {
       const err = new Error(`Product not found: id=${id}`);
       err.status = 404;
       throw err;
     }
 
-    const [rows] = await pool.query(
+    const { rows } = await pool.query(
       `SELECT
          v.id    AS vehicle_id,
          vb.name AS brand,
@@ -200,7 +204,7 @@ async function getProductCompatibility(req, res, next) {
        INNER JOIN vehicle_models vm ON vm.id = v.model_id
        INNER JOIN vehicle_brands vb ON vb.id = vm.brand_id
        INNER JOIN engines        e  ON e.id  = v.engine_id
-       WHERE pc.product_id = ?
+       WHERE pc.product_id = $1
        ORDER BY vb.name, vm.name, v.year_from`,
       [id]
     );

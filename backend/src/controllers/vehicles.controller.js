@@ -12,10 +12,10 @@ function parseYear(raw) {
 
 async function listVehicleBrands(req, res, next) {
   try {
-    const [rows] = await pool.query(
+    const { rows } = await pool.query(
       `SELECT id, name, slug
        FROM vehicle_brands
-       WHERE is_active = 1
+       WHERE is_active = TRUE
        ORDER BY name`
     );
     res.json(rows);
@@ -36,8 +36,8 @@ async function listVehicleModels(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('vm.brand_id = ?');
       params.push(brandId);
+      where.push(`vm.brand_id = $${params.length}`);
     }
 
     const sql = `SELECT
@@ -51,7 +51,7 @@ async function listVehicleModels(req, res, next) {
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY vb.name, vm.name`;
 
-    const [rows] = await pool.query(sql, params);
+    const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     next(err);
@@ -70,8 +70,8 @@ async function listVehicles(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('vm.brand_id = ?');
       params.push(brandId);
+      where.push(`vm.brand_id = $${params.length}`);
     }
 
     if (req.query.model_id !== undefined) {
@@ -81,8 +81,8 @@ async function listVehicles(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('v.model_id = ?');
       params.push(modelId);
+      where.push(`v.model_id = $${params.length}`);
     }
 
     if (req.query.engine_id !== undefined) {
@@ -92,8 +92,8 @@ async function listVehicles(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('v.engine_id = ?');
       params.push(engineId);
+      where.push(`v.engine_id = $${params.length}`);
     }
 
     if (req.query.year !== undefined) {
@@ -103,8 +103,9 @@ async function listVehicles(req, res, next) {
         err.status = 400;
         throw err;
       }
-      where.push('v.year_from <= ? AND (v.year_to IS NULL OR v.year_to >= ?)');
-      params.push(year, year);
+      params.push(year);
+      const p = `$${params.length}`;
+      where.push(`v.year_from <= ${p} AND (v.year_to IS NULL OR v.year_to >= ${p})`);
     }
 
     const sql = `SELECT
@@ -125,7 +126,7 @@ async function listVehicles(req, res, next) {
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY vb.name, vm.name, v.year_from`;
 
-    const [rows] = await pool.query(sql, params);
+    const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (err) {
     next(err);
