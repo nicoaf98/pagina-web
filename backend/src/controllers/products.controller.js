@@ -487,6 +487,151 @@ async function setProductStatus(req, res, next) {
   }
 }
 
+// ----- admin extras (admin / seller) --------------------------
+
+function parseBoolFlag(raw) {
+  if (typeof raw !== 'string') return null;
+  const v = raw.toLowerCase().trim();
+  if (v === 'true' || v === '1') return true;
+  if (v === 'false' || v === '0') return false;
+  return null;
+}
+
+async function adminListProducts(req, res, next) {
+  try {
+    const rawLimit = Number(req.query.limit);
+    const rawOffset = Number(req.query.offset);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(Math.max(Math.trunc(rawLimit), 1), 200)
+      : 50;
+    const offset = Number.isFinite(rawOffset) ? Math.max(Math.trunc(rawOffset), 0) : 0;
+
+    const where = [];
+    const params = [];
+
+    if (req.query.search !== undefined) {
+      const raw = Array.isArray(req.query.search) ? req.query.search[0] : req.query.search;
+      const term = String(raw || '').trim();
+      if (term.length > 0) {
+        const like = `%${term}%`;
+        params.push(like, like);
+        where.push(
+          `(p.name ILIKE $${params.length - 1} OR p.part_number ILIKE $${params.length})`
+        );
+      }
+    }
+
+    if (req.query.category_id !== undefined) {
+      const categoryId = parsePositiveInt(req.query.category_id);
+      if (!categoryId) return next(makeError(400, 'Invalid category_id'));
+      params.push(categoryId);
+      where.push(`p.category_id = $${params.length}`);
+    }
+
+    if (req.query.manufacturer_id !== undefined) {
+      const manufacturerId = parsePositiveInt(req.query.manufacturer_id);
+      if (!manufacturerId) return next(makeError(400, 'Invalid manufacturer_id'));
+      params.push(manufacturerId);
+      where.push(`p.manufacturer_id = $${params.length}`);
+    }
+
+    if (req.query.is_active !== undefined) {
+      const flag = parseBoolFlag(String(req.query.is_active));
+      if (flag === null) return next(makeError(400, 'is_active must be true or false'));
+      where.push(`p.is_active = ${flag ? 'TRUE' : 'FALSE'}`);
+    }
+
+    params.push(limit, offset);
+    const limitIdx = params.length - 1;
+    const offsetIdx = params.length;
+
+    const sql = `SELECT
+         p.id, p.sku, p.part_number, p.name, p.price, p.stock,
+         p.is_active, p.created_at, p.updated_at,
+         m.name         AS manufacturer,
+         c.display_name AS category
+       FROM products p
+       INNER JOIN manufacturers m ON m.id = p.manufacturer_id
+       INNER JOIN categories    c ON c.id = p.category_id
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY p.id
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+function validateBulkPricePayload(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'Body must be a JSON object';
+  }
+  if (typeof body.percentage !== 'number' || !Number.isFinite(body.percentage)) {
+    return 'percentage must be a finite number';
+  }
+  // Strict > -100 keeps prices > 0 given the schema CHECK (price >= 0).
+  if (body.percentage <= -100) {
+    return 'percentage must be greater than -100 (would make prices non-positive)';
+  }
+  if (body.scope !== 'all' && body.scope !== 'active') {
+    return "scope must be 'all' or 'active'";
+  }
+  if (body.round_to !== undefined && body.round_to !== null) {
+    if (!Number.isInteger(body.round_to) || body.round_to <= 0) {
+      return 'round_to must be a positive integer (default: 1)';
+    }
+  }
+  return null;
+}
+
+async function bulkUpdatePrices(req, res, next) {
+  const validationError = validateBulkPricePayload(req.body);
+  if (validationError) return next(makeError(400, validationError));
+
+  const percentage = req.body.percentage;
+  const scope = req.body.scope;
+  const round_to = req.body.round_to ?? 1;
+  const factor = 1 + percentage / 100;
+
+  let updatedCount = 0;
+  let transactionError = null;
+
+  // Single UPDATE is atomic by itself, but wrap in BEGIN/COMMIT so a future
+  // pre/post step (logging, audit) can be added without restructuring.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const whereClause = scope === 'active' ? 'WHERE is_active = TRUE' : '';
+    const sql = `
+      UPDATE products
+      SET price = ROUND(price * $1::numeric / $2::numeric) * $2::numeric
+      ${whereClause}
+    `;
+
+    const { rowCount } = await client.query(sql, [factor, round_to]);
+    updatedCount = rowCount;
+
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    transactionError = err;
+  } finally {
+    client.release();
+  }
+
+  if (transactionError) return next(mapPgError(transactionError));
+
+  res.json({
+    updated_count: updatedCount,
+    percentage,
+    scope,
+    round_to,
+  });
+}
+
 module.exports = {
   listProducts,
   getProductById,
@@ -494,4 +639,6 @@ module.exports = {
   createProduct,
   updateProduct,
   setProductStatus,
+  adminListProducts,
+  bulkUpdatePrices,
 };

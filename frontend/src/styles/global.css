@@ -523,6 +523,76 @@ body {
   white-space: nowrap;
 }
 
+/* ---- Status filter pills ---------------------------------- */
+.admin-page__filter {
+  display: flex;
+  gap: 6px;
+  margin: 16px 0 12px;
+  flex-wrap: wrap;
+}
+
+.admin-page__filter-btn {
+  padding: 6px 12px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  color: #1f2328;
+}
+
+.admin-page__filter-btn:hover {
+  background: #f3f4f6;
+}
+
+.admin-page__filter-btn--active {
+  background: #111827;
+  border-color: #111827;
+  color: #fff;
+}
+
+/* ---- Status badge in admin table -------------------------- */
+.admin-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.admin-status--active {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.admin-status--inactive {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.admin-table__row--inactive {
+  background: #fafafa;
+  color: #6b7280;
+}
+
+/* ---- Bulk price update panel ----------------------------- */
+.admin-bulk {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.admin-bulk .admin-form__title {
+  margin-top: 0;
+}
+
 @media (max-width: 600px) {
   .admin-page {
     padding: 16px;

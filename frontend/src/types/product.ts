@@ -77,3 +77,35 @@ export interface ProductCreateInput {
 
 // Body for PATCH /api/products/:id (any subset of the create fields).
 export type ProductUpdateInput = Partial<ProductCreateInput>;
+
+// Row returned by GET /api/admin/products (admin listing — active + inactive).
+export interface AdminProductRow {
+  id: number;
+  sku: string;
+  part_number: string | null;
+  name: string;
+  price: string;
+  stock: number;
+  is_active: boolean;
+  manufacturer: string;
+  category: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BulkScope = 'all' | 'active';
+
+// Body for PATCH /api/admin/products/prices/bulk
+export interface BulkPricePayload {
+  percentage: number;
+  scope: BulkScope;
+  round_to?: number;
+}
+
+// Response of the same endpoint
+export interface BulkPriceResult {
+  updated_count: number;
+  percentage: number;
+  scope: BulkScope;
+  round_to: number;
+}

@@ -1,16 +1,24 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+
+// Minimal structural type for form submit handlers. Avoids React 19's
+// @deprecated FormEvent / FormEventHandler aliases; we only call
+// preventDefault() so this is exactly what we need and stays type-safe.
+type SubmitLike = { preventDefault: () => void };
 import { ApiError } from '../api/client';
 import {
+  bulkUpdatePrices,
   createProduct,
+  fetchAdminProducts,
   fetchProductById,
-  fetchProducts,
   setProductStatus,
   updateProduct,
+  type AdminProductFilters,
 } from '../api/products';
 import type {
+  AdminProductRow,
+  BulkScope,
   ProductCreateInput,
-  ProductSummary,
   ProductUpdateInput,
 } from '../types/product';
 
@@ -19,11 +27,13 @@ type Mode =
   | { kind: 'create' }
   | { kind: 'edit'; id: number };
 
+type StatusFilter = 'all' | 'active' | 'inactive';
+
 interface FormState {
   name: string;
   sku: string;
   part_number: string;
-  price: string;        // kept as string in the input, parsed on submit
+  price: string;
   stock: string;
   manufacturer_id: string;
   category_id: string;
@@ -39,6 +49,18 @@ const EMPTY_FORM: FormState = {
   manufacturer_id: '',
   category_id: '',
   is_active: true,
+};
+
+interface BulkFormState {
+  percentage: string;
+  scope: BulkScope;
+  round_to: string;
+}
+
+const EMPTY_BULK: BulkFormState = {
+  percentage: '',
+  scope: 'active',
+  round_to: '1',
 };
 
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -58,13 +80,20 @@ function formatPrice(raw: string): string {
   return Number.isFinite(n) ? priceFormatter.format(n) : raw;
 }
 
+function statusFilterToParam(s: StatusFilter): boolean | undefined {
+  if (s === 'active') return true;
+  if (s === 'inactive') return false;
+  return undefined;
+}
+
 export function AdminProductsPage() {
   const { state } = useAuth();
   const token = state.status === 'authenticated' ? state.token : null;
 
-  const [products, setProducts] = useState<ProductSummary[]>([]);
+  const [products, setProducts] = useState<AdminProductRow[]>([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
   const [mode, setMode] = useState<Mode>({ kind: 'list' });
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
@@ -72,18 +101,26 @@ export function AdminProductsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
 
+  const [bulkForm, setBulkForm] = useState<BulkFormState>(EMPTY_BULK);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+
   const reloadList = useCallback(async () => {
+    if (!token) return;
     setListLoading(true);
     setListError(null);
     try {
-      const data = await fetchProducts({ limit: 100 });
+      const filters: AdminProductFilters = { limit: 200 };
+      const isActive = statusFilterToParam(statusFilter);
+      if (isActive !== undefined) filters.is_active = isActive;
+      const data = await fetchAdminProducts(token, filters);
       setProducts(data);
     } catch (err) {
       setListError(getErrorMessage(err, 'Error al cargar productos'));
     } finally {
       setListLoading(false);
     }
-  }, []);
+  }, [token, statusFilter]);
 
   useEffect(() => {
     reloadList();
@@ -144,7 +181,7 @@ export function AdminProductsPage() {
     return null;
   }
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: SubmitLike) {
     e.preventDefault();
     setFormError(null);
     setFlash(null);
@@ -190,8 +227,9 @@ export function AdminProductsPage() {
     }
   }
 
-  async function handleToggleStatus(p: ProductSummary, nextActive: boolean) {
+  async function handleToggleStatus(p: AdminProductRow) {
     if (!token) return;
+    const nextActive = !p.is_active;
     setFlash(null);
     setListError(null);
     try {
@@ -204,6 +242,59 @@ export function AdminProductsPage() {
       await reloadList();
     } catch (err) {
       setListError(getErrorMessage(err, 'Error al cambiar el estado'));
+    }
+  }
+
+  async function handleBulkSubmit(e: SubmitLike) {
+    e.preventDefault();
+    setBulkError(null);
+    setFlash(null);
+
+    if (!token) {
+      setBulkError('Sesión no válida.');
+      return;
+    }
+
+    const percentage = Number.parseFloat(bulkForm.percentage);
+    if (!Number.isFinite(percentage)) {
+      setBulkError('Ingresá un porcentaje numérico (puede ser negativo).');
+      return;
+    }
+    if (percentage <= -100) {
+      setBulkError('El porcentaje debe ser mayor a -100.');
+      return;
+    }
+    const roundTo = Number.parseInt(bulkForm.round_to, 10);
+    if (!Number.isInteger(roundTo) || roundTo <= 0) {
+      setBulkError('round_to debe ser un entero positivo (usá 1 para redondear a entero).');
+      return;
+    }
+
+    const scopeLabel = bulkForm.scope === 'active' ? 'productos activos' : 'TODOS los productos (incluye inactivos)';
+    const sign = percentage >= 0 ? `un ${percentage}%` : `un ${Math.abs(percentage)}%`;
+    const verb = percentage >= 0 ? 'aumentar' : 'reducir';
+    const ok = window.confirm(
+      `¿Seguro que querés ${verb} ${scopeLabel} ${sign} (round_to=${roundTo})?`
+    );
+    if (!ok) return;
+
+    setBulkLoading(true);
+    try {
+      const result = await bulkUpdatePrices(token, {
+        percentage,
+        scope: bulkForm.scope,
+        round_to: roundTo,
+      });
+      setFlash(
+        `Aumento aplicado: ${result.updated_count} producto(s) actualizado(s) (` +
+          `percentage=${result.percentage}, scope=${result.scope}, round_to=${result.round_to}).`
+      );
+      setBulkForm(EMPTY_BULK);
+      await reloadList();
+    } catch (err) {
+      setBulkError(getErrorMessage(err, 'Error al aplicar el aumento'));
+    } finally {
+      setBulkLoading(false);
     }
   }
 
@@ -225,6 +316,70 @@ export function AdminProductsPage() {
         <div className="admin-page__alert admin-page__alert--error">{listError}</div>
       )}
 
+      {/* ---- Bulk price update ---------------------------------- */}
+      <section className="admin-bulk">
+        <h2 className="admin-form__title">Aumento masivo de precios</h2>
+        <form onSubmit={handleBulkSubmit}>
+          <div className="admin-form__row">
+            <label className="admin-form__field">
+              <span>Porcentaje (%) *</span>
+              <input
+                type="number"
+                step="0.01"
+                value={bulkForm.percentage}
+                onChange={(e) => setBulkForm({ ...bulkForm, percentage: e.target.value })}
+                disabled={bulkLoading}
+                placeholder="ej. 10  o  -5"
+                required
+              />
+              <small className="admin-form__hint">
+                Positivo aumenta, negativo reduce. Debe ser &gt; -100.
+              </small>
+            </label>
+
+            <label className="admin-form__field">
+              <span>Alcance *</span>
+              <select
+                value={bulkForm.scope}
+                onChange={(e) =>
+                  setBulkForm({ ...bulkForm, scope: e.target.value as BulkScope })
+                }
+                disabled={bulkLoading}
+              >
+                <option value="active">Solo activos</option>
+                <option value="all">Todos (incluye inactivos)</option>
+              </select>
+            </label>
+
+            <label className="admin-form__field">
+              <span>Redondear a (round_to)</span>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                value={bulkForm.round_to}
+                onChange={(e) => setBulkForm({ ...bulkForm, round_to: e.target.value })}
+                disabled={bulkLoading}
+              />
+              <small className="admin-form__hint">
+                1 = entero, 100 = múltiplos de 100, etc.
+              </small>
+            </label>
+          </div>
+
+          {bulkError && (
+            <div className="admin-page__alert admin-page__alert--error">{bulkError}</div>
+          )}
+
+          <div className="admin-form__actions">
+            <button type="submit" className="btn btn--primary" disabled={bulkLoading}>
+              {bulkLoading ? 'Aplicando…' : 'Aplicar aumento'}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      {/* ---- Create / edit form -------------------------------- */}
       {isFormOpen && (
         <section className="admin-form">
           <h2 className="admin-form__title">
@@ -361,33 +516,66 @@ export function AdminProductsPage() {
         </section>
       )}
 
+      {/* ---- Status filter ------------------------------------- */}
+      <div className="admin-page__filter">
+        {(['all', 'active', 'inactive'] as const).map((opt) => (
+          <button
+            key={opt}
+            type="button"
+            className={
+              statusFilter === opt
+                ? 'admin-page__filter-btn admin-page__filter-btn--active'
+                : 'admin-page__filter-btn'
+            }
+            onClick={() => setStatusFilter(opt)}
+          >
+            {opt === 'all' ? 'Todos' : opt === 'active' ? 'Activos' : 'Inactivos'}
+          </button>
+        ))}
+      </div>
+
+      {/* ---- Products table ----------------------------------- */}
       <section className="admin-table-wrap">
         {listLoading ? (
           <div className="state state--loading">Cargando productos…</div>
         ) : products.length === 0 ? (
-          <div className="state state--empty">No hay productos activos.</div>
+          <div className="state state--empty">No hay productos para el filtro seleccionado.</div>
         ) : (
           <table className="admin-table">
             <thead>
               <tr>
                 <th>ID</th>
+                <th>SKU</th>
                 <th>Nombre</th>
                 <th>Marca</th>
                 <th>Categoría</th>
                 <th className="admin-table__num">Precio</th>
                 <th className="admin-table__num">Stock</th>
+                <th>Estado</th>
                 <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
               {products.map((p) => (
-                <tr key={p.id}>
+                <tr key={p.id} className={p.is_active ? '' : 'admin-table__row--inactive'}>
                   <td>{p.id}</td>
+                  <td>{p.sku}</td>
                   <td>{p.name}</td>
                   <td>{p.manufacturer}</td>
                   <td>{p.category}</td>
                   <td className="admin-table__num">{formatPrice(p.price)}</td>
                   <td className="admin-table__num">{p.stock}</td>
+                  <td>
+                    <span
+                      className={
+                        p.is_active
+                          ? 'admin-status admin-status--active'
+                          : 'admin-status admin-status--inactive'
+                      }
+                    >
+                      {p.is_active ? 'Activo' : 'Inactivo'}
+                    </span>
+                  </td>
                   <td>
                     <button
                       type="button"
@@ -399,11 +587,11 @@ export function AdminProductsPage() {
                     </button>{' '}
                     <button
                       type="button"
-                      className="btn btn--small btn--danger"
-                      onClick={() => handleToggleStatus(p, false)}
+                      className={p.is_active ? 'btn btn--small btn--danger' : 'btn btn--small'}
+                      onClick={() => handleToggleStatus(p)}
                       disabled={formLoading}
                     >
-                      Desactivar
+                      {p.is_active ? 'Desactivar' : 'Reactivar'}
                     </button>
                   </td>
                 </tr>
@@ -411,11 +599,6 @@ export function AdminProductsPage() {
             </tbody>
           </table>
         )}
-        <p className="admin-page__note">
-          Esta tabla solo lista productos activos (limitación del endpoint público).
-          Para reactivar un producto desactivado, hay que conocer su id y usar
-          <code> PATCH /api/products/:id/status</code> con <code>is_active: true</code>.
-        </p>
       </section>
     </div>
   );

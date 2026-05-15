@@ -1,6 +1,9 @@
 import { apiGet, apiPatch, apiPost } from './client';
 import type {
   AdminProduct,
+  AdminProductRow,
+  BulkPricePayload,
+  BulkPriceResult,
   ProductCreateInput,
   ProductDetail,
   ProductSummary,
@@ -51,4 +54,35 @@ export function setProductStatus(
   is_active: boolean
 ): Promise<AdminProduct> {
   return apiPatch<AdminProduct>(`/api/products/${id}/status`, { is_active }, { token });
+}
+
+// ----- admin (staff-only) endpoints --------------------------
+
+export interface AdminProductFilters {
+  search?: string;
+  manufacturer_id?: number;
+  category_id?: number;
+  is_active?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export function fetchAdminProducts(
+  token: string,
+  filters: AdminProductFilters = {}
+): Promise<AdminProductRow[]> {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null || value === '') continue;
+    qs.set(key, String(value));
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiGet<AdminProductRow[]>(`/api/admin/products${suffix}`, { token });
+}
+
+export function bulkUpdatePrices(
+  token: string,
+  payload: BulkPricePayload
+): Promise<BulkPriceResult> {
+  return apiPatch<BulkPriceResult>('/api/admin/products/prices/bulk', payload, { token });
 }
