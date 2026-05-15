@@ -61,4 +61,22 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-module.exports = { authMiddleware };
+function requireRole(...allowedRoles) {
+  return function (req, res, next) {
+    if (!req.user) {
+      // Defensive: should never happen if authMiddleware ran first.
+      return next(makeError(401, 'Authentication required'));
+    }
+    if (!allowedRoles.includes(req.user.role)) {
+      return next(
+        makeError(
+          403,
+          `Forbidden: role '${req.user.role}' is not allowed (need one of: ${allowedRoles.join(', ')})`
+        )
+      );
+    }
+    next();
+  };
+}
+
+module.exports = { authMiddleware, requireRole };
