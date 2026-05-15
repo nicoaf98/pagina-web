@@ -1,0 +1,14 @@
+{
+  "name": "car-parts-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Root package for Vercel deployment. The api/ folder reuses the Express app from backend/src/app.js.",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "mysql2": "^3.11.0"
+  }
+}
