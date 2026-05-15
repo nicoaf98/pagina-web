@@ -1,5 +1,11 @@
-import { apiGet } from './client';
-import type { ProductSummary } from '../types/product';
+import { apiGet, apiPatch, apiPost } from './client';
+import type {
+  AdminProduct,
+  ProductCreateInput,
+  ProductDetail,
+  ProductSummary,
+  ProductUpdateInput,
+} from '../types/product';
 
 export type ProductFilters = {
   search?: string;
@@ -18,4 +24,31 @@ export function fetchProducts(filters: ProductFilters = {}): Promise<ProductSumm
   }
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return apiGet<ProductSummary[]>(`/api/products${suffix}`);
+}
+
+export function fetchProductById(id: number): Promise<ProductDetail> {
+  return apiGet<ProductDetail>(`/api/products/${id}`);
+}
+
+export function createProduct(
+  token: string,
+  payload: ProductCreateInput
+): Promise<AdminProduct> {
+  return apiPost<AdminProduct>('/api/products', payload, { token });
+}
+
+export function updateProduct(
+  token: string,
+  id: number,
+  payload: ProductUpdateInput
+): Promise<AdminProduct> {
+  return apiPatch<AdminProduct>(`/api/products/${id}`, payload, { token });
+}
+
+export function setProductStatus(
+  token: string,
+  id: number,
+  is_active: boolean
+): Promise<AdminProduct> {
+  return apiPatch<AdminProduct>(`/api/products/${id}/status`, { is_active }, { token });
 }

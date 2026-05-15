@@ -36,22 +36,29 @@ async function parseResponse<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function apiGet<T>(path: string, opts?: RequestOptions): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts?: RequestOptions
+): Promise<T> {
+  const hasBody = body !== undefined;
   const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: buildHeaders(opts),
+    method,
+    headers: buildHeaders(opts, hasBody),
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
   return parseResponse<T>(res);
 }
 
-export async function apiPost<T>(
-  path: string,
-  body: unknown,
-  opts?: RequestOptions
-): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: buildHeaders(opts, true),
-    body: JSON.stringify(body),
-  });
-  return parseResponse<T>(res);
+export function apiGet<T>(path: string, opts?: RequestOptions): Promise<T> {
+  return request<T>('GET', path, undefined, opts);
+}
+
+export function apiPost<T>(path: string, body: unknown, opts?: RequestOptions): Promise<T> {
+  return request<T>('POST', path, body, opts);
+}
+
+export function apiPatch<T>(path: string, body: unknown, opts?: RequestOptions): Promise<T> {
+  return request<T>('PATCH', path, body, opts);
 }
